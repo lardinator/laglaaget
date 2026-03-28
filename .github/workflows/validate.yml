@@ -1,0 +1,36 @@
+name: Validate law files
+
+on: [push, pull_request]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate YAML frontmatter
+        run: python scripts/validate/frontmatter.py lagar/ förordningar/ grundlagar/
+
+      - name: Check SFS number uniqueness
+        run: python scripts/validate/sfs_uniqueness.py
+
+      - name: Verify cross-references
+        run: python scripts/validate/cross_references.py
+
+      - name: Validate commit message format
+        if: github.event_name == 'pull_request'
+        run: |
+          git log --format="%s" origin/main..HEAD | while read -r msg; do
+            if ! echo "$msg" | grep -qE '^SFS [0-9]{4}:[0-9]+ —'; then
+              echo "::warning::Commit message does not follow SFS format: $msg"
+            fi
+          done

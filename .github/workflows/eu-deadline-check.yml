@@ -1,0 +1,64 @@
+name: EU transposition deadline monitor
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'   # Monday mornings 08:00 UTC
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check EU transposition deadlines
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python -c "
+          import os, json, subprocess, datetime
+
+          today = datetime.date.today()
+          # Use gh CLI to list EU directive issues
+          result = subprocess.run(
+              ['gh', 'issue', 'list', '--label', 'eu-direktiv', '--json',
+               'number,title,body,labels', '--limit', '100'],
+              capture_output=True, text=True
+          )
+          issues = json.loads(result.stdout) if result.returncode == 0 else []
+
+          for issue in issues:
+              body = issue.get('body', '')
+              # Extract deadline from issue body (expects 'Deadline: YYYY-MM-DD')
+              for line in body.split('\n'):
+                  if line.startswith('Deadline:'):
+                      deadline_str = line.split(':',1)[1].strip()
+                      try:
+                          deadline = datetime.date.fromisoformat(deadline_str)
+                      except ValueError:
+                          continue
+                      days_left = (deadline - today).days
+                      number = issue['number']
+                      labels = [l['name'] for l in issue.get('labels', [])]
+
+                      if days_left < 0 and 'transposition-försenad' not in labels:
+                          subprocess.run(['gh', 'issue', 'edit', str(number),
+                                         '--add-label', 'transposition-försenad'])
+                      elif days_left < 30 and 'transposition-kritisk' not in labels:
+                          subprocess.run(['gh', 'issue', 'edit', str(number),
+                                         '--add-label', 'transposition-kritisk'])
+                      elif days_left < 90 and 'transposition-nära' not in labels:
+                          subprocess.run(['gh', 'issue', 'edit', str(number),
+                                         '--add-label', 'transposition-nära'])
+          "

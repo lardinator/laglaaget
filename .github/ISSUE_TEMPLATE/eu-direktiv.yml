@@ -1,0 +1,46 @@
+name: EU-direktiv
+description: Track an EU directive requiring transposition into Swedish law
+title: "[EU] "
+labels: ["eu-direktiv"]
+body:
+  - type: input
+    id: direktiv_id
+    attributes:
+      label: Direktiv-ID
+      description: The EU directive number (e.g. 2019/1937)
+      placeholder: "2024/xxxx"
+    validations:
+      required: true
+  - type: input
+    id: titel
+    attributes:
+      label: Titel
+      description: Full title of the directive
+    validations:
+      required: true
+  - type: input
+    id: deadline
+    attributes:
+      label: Deadline
+      description: Transposition deadline (ISO date)
+      placeholder: "2026-12-31"
+    validations:
+      required: true
+  - type: textarea
+    id: beskrivning
+    attributes:
+      label: Beskrivning
+      description: Brief description of the directive and its impact on Swedish law
+    validations:
+      required: true
+  - type: input
+    id: berorda_lagar
+    attributes:
+      label: Berörda lagar
+      description: SFS numbers of laws likely affected (comma-separated)
+      placeholder: "1962:700, 2014:307"
+  - type: input
+    id: ansvarigt_departement
+    attributes:
+      label: Ansvarigt departement
+      description: Which department is responsible for transposition

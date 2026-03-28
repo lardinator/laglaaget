@@ -1,0 +1,62 @@
+name: Lagstiftningsärende
+description: Track a new legislative matter through the Riksdag pipeline
+title: "[Ärende] "
+labels: []
+body:
+  - type: input
+    id: proposition
+    attributes:
+      label: Proposition
+      description: Proposition number (e.g. 2023/24:87)
+      placeholder: "2024/25:xxx"
+    validations:
+      required: true
+  - type: input
+    id: titel
+    attributes:
+      label: Titel
+      description: Short title of the proposition
+    validations:
+      required: true
+  - type: dropdown
+    id: utskott
+    attributes:
+      label: Utskott
+      description: Responsible committee
+      options:
+        - KU (Konstitutionsutskottet)
+        - FiU (Finansutskottet)
+        - JuU (Justitieutskottet)
+        - CU (Civilutskottet)
+        - FöU (Försvarsutskottet)
+        - SfU (Socialförsäkringsutskottet)
+        - SoU (Socialutskottet)
+        - KrU (Kulturutskottet)
+        - UbU (Utbildningsutskottet)
+        - TU (Trafikutskottet)
+        - MJU (Miljö- och jordbruksutskottet)
+        - NU (Näringsutskottet)
+        - AU (Arbetsmarknadsutskottet)
+        - UU (Utrikesutskottet)
+        - SkU (Skatteutskottet)
+    validations:
+      required: true
+  - type: textarea
+    id: beskrivning
+    attributes:
+      label: Beskrivning
+      description: Summary of the proposed changes
+    validations:
+      required: true
+  - type: input
+    id: berorda_sfs
+    attributes:
+      label: Berörda SFS-nummer
+      description: SFS numbers of laws affected (comma-separated)
+      placeholder: "1962:700, 2014:307"
+  - type: input
+    id: ikraftträdande
+    attributes:
+      label: Föreslaget ikraftträdandedatum
+      description: Proposed entry-into-force date (ISO date)
+      placeholder: "2025-07-01"

@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/lardinator/lagl-get/schema/law.schema.json",
+  "title": "Swedish Law File Frontmatter",
+  "description": "Schema for YAML frontmatter in SFS law files",
+  "type": "object",
+  "required": ["sfs", "titel", "departement", "typ", "ikraftträdande"],
+  "properties": {
+    "sfs": {
+      "type": "string",
+      "pattern": "^[0-9]{4}:[0-9]+$",
+      "description": "Unique SFS identifier, e.g. '1962:700'"
+    },
+    "titel": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Full title including SFS number, e.g. 'Brottsbalk (1962:700)'"
+    },
+    "kortnamn": {
+      "type": ["string", "null"],
+      "description": "Common abbreviation, e.g. 'BrB'"
+    },
+    "departement": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Current responsible department"
+    },
+    "typ": {
+      "type": "string",
+      "enum": ["lag", "förordning", "grundlag"],
+      "description": "Type of legal instrument"
+    },
+    "ikraftträdande": {
+      "type": "string",
+      "format": "date",
+      "description": "Entry-into-force date (ISO 8601)"
+    },
+    "upphävd": {
+      "type": ["string", "null"],
+      "format": "date",
+      "description": "Repeal date (ISO 8601) or null if still in force"
+    },
+    "eu_direktiv": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of EU directive IDs, e.g. ['2019/1937']"
+    },
+    "relaterade_lagar": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9]{4}:[0-9]+$"
+      },
+      "description": "SFS numbers of referenced laws"
+    },
+    "riksdagen_dok_id": {
+      "type": ["string", "null"],
+      "description": "Riksdagen document ID for latest change"
+    },
+    "ändringshistorik": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["sfs_ändring", "datum"],
+        "properties": {
+          "sfs_ändring": {
+            "type": "string",
+            "pattern": "^[0-9]{4}:[0-9]+$",
+            "description": "SFS number of the amending act"
+          },
+          "datum": {
+            "type": "string",
+            "format": "date",
+            "description": "Date the amendment entered into force"
+          },
+          "prop": {
+            "type": ["string", "null"],
+            "description": "Proposition number, e.g. '2022/23:126'"
+          }
+        }
+      },
+      "description": "Change history, maintained by sync script"
+    }
+  },
+  "additionalProperties": false
+}

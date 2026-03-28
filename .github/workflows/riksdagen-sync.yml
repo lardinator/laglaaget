@@ -1,0 +1,35 @@
+name: Riksdagen API sync
+
+on:
+  schedule:
+    - cron: '0 1 * * *'   # 02:00 CET (01:00 UTC)
+  workflow_dispatch:        # Allow manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Riksdagen sync
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RIKSDAGEN_API_BASE: https://data.riksdagen.se
+          RINFO_BASE: https://rinfo.gov.se
+        run: |
+          python scripts/import/riksdagen_sync.py \
+            --since "$(date -d 'yesterday' +%Y-%m-%d)"
