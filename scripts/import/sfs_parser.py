@@ -21,6 +21,40 @@ class SFSParser:
         "rpubl": "http://rinfo.lagrummet.se/ns/2008/11/rinfo/publ#",
     }
 
+    GRUNDLAGAR = {"1974:152", "1974:713", "1949:105", "1810:926"}
+
+    def parse_from_scraper(self, metadata, text) -> dict:
+        """Convert SFSMetadata + SFSText (from RkrattsbaserScraper) into a dict
+        compatible with to_markdown()."""
+        titel = metadata.titel
+        sfs = metadata.sfs
+
+        if sfs in self.GRUNDLAGAR:
+            typ = "grundlag"
+        elif "förordning" in titel.lower():
+            typ = "förordning"
+        else:
+            typ = "lag"
+
+        return {
+            "sfs": sfs,
+            "titel": titel,
+            "kortnamn": None,
+            "departement": metadata.departement,
+            "typ": typ,
+            "ikraftträdande": metadata.ikraftträdande,
+            "utfärdad": metadata.utfärdad,
+            "upphävd": None,
+            "eu_direktiv": [],
+            "kapitel": [],
+            "forarbete_prop": metadata.forarbete_prop,
+            "forarbete_bet": metadata.forarbete_bet,
+            "forarbete_rskr": metadata.forarbete_rskr,
+            "andringar": metadata.andringar,
+            "body_text": text.text if text is not None else "",
+            "andring_intom": text.andring_intom if text is not None else None,
+        }
+
     def parse(self, xml_content: str) -> dict:
         """Parse SFS XML into a structured dictionary.
 
@@ -135,26 +169,35 @@ class SFSParser:
         return chapters
 
     def to_markdown(self, parsed: dict) -> str:
-        """Convert parsed SFS data to Markdown with YAML frontmatter.
+        """Convert parsed SFS data to Markdown with YAML frontmatter."""
+        # Build ändringshistorik from andringar list (SFSAndring objects or dicts)
+        ändringshistorik = []
+        for a in parsed.get("andringar", []):
+            if hasattr(a, "sfs"):
+                ändringshistorik.append({
+                    "sfs": a.sfs,
+                    "rubrik": a.rubrik,
+                    "ikraftträdande": a.ikraftträdande,
+                })
+            elif isinstance(a, dict):
+                ändringshistorik.append(a)
 
-        Args:
-            parsed: Dictionary from self.parse()
-
-        Returns:
-            Complete Markdown string with frontmatter.
-        """
-        # Build frontmatter
         frontmatter = {
             "sfs": parsed["sfs"],
             "titel": parsed["titel"],
             "departement": parsed["departement"],
             "typ": parsed["typ"],
             "ikraftträdande": parsed.get("ikraftträdande", "okänd"),
+            "utfärdad": parsed.get("utfärdad"),
             "upphävd": parsed.get("upphävd"),
+            "forarbete_prop": parsed.get("forarbete_prop"),
+            "forarbete_bet": parsed.get("forarbete_bet"),
+            "forarbete_rskr": parsed.get("forarbete_rskr"),
+            "andring_intom": parsed.get("andring_intom"),
             "eu_direktiv": parsed.get("eu_direktiv", []),
             "relaterade_lagar": [],
             "riksdagen_dok_id": None,
-            "ändringshistorik": [],
+            "ändringshistorik": ändringshistorik,
         }
         if parsed.get("kortnamn"):
             frontmatter["kortnamn"] = parsed["kortnamn"]
@@ -166,7 +209,6 @@ class SFSParser:
             sort_keys=False,
         )
 
-        # Build body
         lines = [f"---\n{fm_yaml}---\n"]
         lines.append(f"# {parsed['titel']}\n")
 
@@ -176,12 +218,15 @@ class SFSParser:
                 nummer = chapter.get("nummer", "")
                 rubrik = chapter.get("rubrik", "")
                 lines.append(f"\n## {nummer} kap. {rubrik}\n")
-
                 for para in chapter.get("paragrafer", []):
                     p_nummer = para.get("nummer", "")
                     p_text = para.get("text", "")
                     lines.append(f"\n### {p_nummer} §\n")
                     lines.append(f"{p_text}\n")
+        else:
+            body_text = parsed.get("body_text", "")
+            if body_text:
+                lines.append(f"\n{body_text}\n")
 
         return "\n".join(lines)
 

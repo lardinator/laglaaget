@@ -21,7 +21,9 @@ import git
 import requests
 import yaml
 
+from prot_parser import ProtParser, VoteringResult
 from sfs_parser import SFSParser
+from rkrattsbaser_scraper import RkrattsbaserScraper, SFSMetadata
 
 logging.basicConfig(
     level=logging.INFO,
@@ -172,12 +174,238 @@ def create_annual_tags(repo: git.Repo, from_year: int, to_year: int) -> None:
             logger.warning("Could not create tag %s", tag_name)
 
 
+def sort_key_for_sfs(metadata) -> str:
+    """Return sortable key: ikraftträdande ISO date, or '9999-99-99' for None."""
+    return metadata.ikraftträdande or "9999-99-99"
+
+
+def run_import_rkrattsbaser(
+    dry_run: bool = False,
+    sfs_filter: list[str] | None = None,
+) -> None:
+    """Run historical import using RkrattsbaserScraper (replaces defunct rinfo.gov.se)."""
+    repo_path = Path(__file__).resolve().parent.parent.parent
+    repo = git.Repo(repo_path)
+
+    scraper = RkrattsbaserScraper()
+    parser = SFSParser()
+    prot_parser = ProtParser()
+    total_commits = 0
+
+    logger.info(
+        "Starting rkrattsbaser import%s%s",
+        f" (filter: {sfs_filter})" if sfs_filter else "",
+        " (DRY RUN)" if dry_run else "",
+    )
+
+    # Get SFS numbers to process
+    if sfs_filter is not None:
+        sfs_numbers = sfs_filter
+    else:
+        logger.info("Enumerating all SFS numbers from rkrattsbaser.gov.se...")
+        sfs_numbers = scraper.enumerate_sfs_numbers()
+        logger.info("Found %d SFS numbers", len(sfs_numbers))
+
+    # Fetch metadata for all, skip None, sort chronologically
+    entries: list[tuple] = []
+    for sfs in sfs_numbers:
+        metadata = scraper.fetch_metadata(sfs)
+        if metadata is None:
+            logger.warning("No metadata for SFS %s, skipping", sfs)
+            continue
+        entries.append((metadata, sfs))
+
+    entries.sort(key=lambda t: sort_key_for_sfs(t[0]))
+    logger.info("Processing %d entries in chronological order", len(entries))
+
+    for metadata, sfs in entries:
+        try:
+            text = scraper.fetch_text(sfs)
+            parsed = parser.parse_from_scraper(metadata, text)
+            file_path = determine_file_path(parsed["sfs"], parsed["typ"])
+            markdown = parser.to_markdown(parsed)
+
+            # Resolve votering from riksdag protocol
+            bet_beteckning = parsed.get("forarbete_bet") or ""
+            ikraft = parsed.get("ikraftträdande") or ""
+            year = int(ikraft[:4]) if ikraft and len(ikraft) >= 4 else 0
+            rm = str(year) if year <= 1974 else f"{year}/{str(year + 1)[-2:]}" if year > 0 else ""
+            votering_str = "ej tillgänglig"
+            riksdagen_dok = "okänd"
+            if bet_beteckning and rm and not dry_run:
+                prot_result = fetch_protokoll_section(bet_beteckning, rm)
+                if prot_result:
+                    prot_text, riksdagen_dok = prot_result
+                    votering = prot_parser.parse_votering(prot_text, rm)
+                    votering_str = format_votering_for_commit(votering)
+
+            create_commit(
+                repo=repo,
+                file_path=file_path,
+                content=markdown,
+                sfs_number=parsed["sfs"],
+                description=parsed.get("titel", "Ny författning"),
+                ikraftträdande=parsed.get("ikraftträdande", "1900-01-01"),
+                proposition=parsed.get("forarbete_prop", "okänd"),
+                utskott=parsed.get("forarbete_bet", "okänd"),
+                votering=votering_str,
+                riksdagen_dok=riksdagen_dok,
+                departement=parsed.get("departement", "Riksdagen"),
+                dry_run=dry_run,
+            )
+            total_commits += 1
+        except Exception as e:
+            logger.error("Failed to process SFS %s: %s", sfs, e)
+
+    if not dry_run:
+        logger.info("Creating annual tags...")
+        years = [int(m.ikraftträdande[:4]) for m, _ in entries if m.ikraftträdande]
+        if years:
+            create_annual_tags(repo, min(years), max(years))
+
+    logger.info("Import complete. Total commits: %d", total_commits)
+
+
+def api_get(endpoint: str, params: dict | None = None) -> dict | None:
+    """Fetch from Riksdagen API (data.riksdagen.se).
+
+    Args:
+        endpoint: API endpoint path, e.g. "/dokumentlista/" or "/dokument/{dok_id}"
+        params: Query parameters dict
+
+    Returns:
+        Parsed JSON response as dict, or None on error.
+    """
+    base = "https://data.riksdagen.se"
+    url = f"{base}{endpoint}"
+    headers = {"User-Agent": USER_AGENT}
+
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=30)
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as e:
+            wait = 2 ** attempt
+            logger.warning("API request failed (%s), retrying in %ds...", e, wait)
+            time.sleep(wait)
+
+    logger.error("Failed to fetch %s after 3 attempts", url)
+    return None
+
+
+def format_votering_for_commit(votering: "VoteringResult | None") -> str:
+    """Format a VoteringResult into the commit message Votering: line.
+
+    Examples:
+        "268 ja / 20 nej / 1 avstår (s, v ja; m nej)"
+        "acklamation"
+        "ej tillgänglig"
+    """
+    if votering is None:
+        return "ej tillgänglig"
+
+    if votering.metod == "acklamation":
+        return "acklamation"
+
+    parts = []
+    if votering.ja is not None:
+        parts.append(f"{votering.ja} ja")
+    if votering.nej is not None:
+        parts.append(f"{votering.nej} nej")
+    if votering.avstar is not None:
+        parts.append(f"{votering.avstar} avstår")
+
+    result = " / ".join(parts) if parts else "ej tillgänglig"
+
+    if votering.partier:
+        ja_parties = sorted(p for p, v in votering.partier.items() if v == "ja")
+        nej_parties = sorted(p for p, v in votering.partier.items() if v == "nej")
+        party_parts = []
+        if ja_parties:
+            party_parts.append(f"{', '.join(ja_parties)} ja")
+        if nej_parties:
+            party_parts.append(f"{', '.join(nej_parties)} nej")
+        if party_parts:
+            result += f" ({'; '.join(party_parts)})"
+
+    return result
+
+
+def fetch_protokoll_section(bet_beteckning: str, rm: str) -> tuple[str, str] | None:
+    """Fetch protocol text for the riksdag session that handled a betänkande.
+
+    For rm >= 2002/03: fetches from doktyp=votering using bet_beteckning as dok_id prefix.
+    For older rm: fetches prot document text and searches for the betänkande reference.
+
+    Args:
+        bet_beteckning: e.g. "2016/17:CU11" or "UU15"
+        rm: riksmöte string e.g. "1996/97"
+
+    Returns:
+        Tuple of (text/HTML content, dok_id), or None if not found.
+    """
+    year = int(rm.split("/")[0]) if "/" in rm else int(rm) if rm.isdigit() else 0
+
+    if year >= 2002:
+        # Use dedicated votering document type
+        data = api_get(
+            "/dokumentlista/",
+            params={"doktyp": "votering", "rm": rm, "bet": bet_beteckning},
+        )
+        if not data:
+            return None
+        docs = data.get("dokumentlista", {}).get("dokument", [])
+        if isinstance(docs, dict):
+            docs = [docs]
+        if not docs:
+            return None
+        # Fetch first matching votering document
+        time.sleep(REQUEST_DELAY)
+        dok_id = docs[0].get("dok_id", "")
+        resp = api_get(f"/dokument/{dok_id}")
+        if resp:
+            html = resp.get("dokument", {}).get("html", "")
+            return (html, dok_id) if html else None
+        return None
+
+    else:
+        # Fetch prot listing for this rm, then search for betänkande mention
+        data = api_get(
+            "/dokumentlista/",
+            params={"doktyp": "prot", "rm": rm, "sort": "datum", "sortorder": "asc"},
+        )
+        if not data:
+            return None
+        docs = data.get("dokumentlista", {}).get("dokument", [])
+        if isinstance(docs, dict):
+            docs = [docs]
+
+        # Search through protocols for one mentioning this betänkande
+        for doc in docs[:20]:  # limit to first 20 protocols in session
+            time.sleep(REQUEST_DELAY)
+            dok_id = doc.get("dok_id", "")
+            resp = api_get(f"/dokument/{dok_id}")
+            if not resp:
+                continue
+            text = resp.get("dokument", {}).get("text", "") or ""
+            # Check if this protocol mentions the betänkande
+            bet_short = bet_beteckning.split(":")[-1] if ":" in bet_beteckning else bet_beteckning
+            if bet_short.lower() in text.lower():
+                return (text, dok_id)
+
+        return None
+
+
 def run_import(from_year: int, to_year: int, dry_run: bool = False) -> None:
     """Run the historical import from rinfo.gov.se."""
     repo_path = Path(__file__).resolve().parent.parent.parent
     repo = git.Repo(repo_path)
 
     parser = SFSParser()
+    prot_parser = ProtParser()
     total_commits = 0
 
     logger.info(
@@ -213,15 +441,29 @@ def run_import(from_year: int, to_year: int, dry_run: bool = False) -> None:
                 )
                 markdown = parser.to_markdown(parsed)
 
+                # Resolve votering from protocol
+                bet_beteckning = parsed.get("forarbete_bet", "")
+                rm = str(year) if year <= 1974 else f"{year}/{str(year + 1)[-2:]}"
+                votering_str = "ej tillgänglig"
+                riksdagen_dok = "okänd"
+                if bet_beteckning and not dry_run:
+                    prot_result = fetch_protokoll_section(bet_beteckning, rm)
+                    if prot_result:
+                        prot_text, riksdagen_dok = prot_result
+                        votering = prot_parser.parse_votering(prot_text, rm)
+                        votering_str = format_votering_for_commit(votering)
+
                 create_commit(
                     repo=repo,
                     file_path=file_path,
                     content=markdown,
                     sfs_number=parsed["sfs"],
                     description=parsed.get("titel", "Ny författning"),
-                    ikraftträdande=parsed.get(
-                        "ikraftträdande", f"{year}-01-01"
-                    ),
+                    ikraftträdande=parsed.get("ikraftträdande", f"{year}-01-01"),
+                    proposition=parsed.get("forarbete_prop", "okänd"),
+                    utskott=parsed.get("forarbete_bet", "okänd"),
+                    votering=votering_str,
+                    riksdagen_dok=riksdagen_dok,
                     departement=parsed.get("departement", "Riksdagen"),
                     dry_run=dry_run,
                 )
@@ -242,19 +484,32 @@ def run_import(from_year: int, to_year: int, dry_run: bool = False) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Import historical Swedish law from rinfo.gov.se"
+        description="Import Swedish law into git corpus"
+    )
+    parser.add_argument(
+        "--source",
+        choices=["rkrattsbaser", "rinfo"],
+        default="rkrattsbaser",
+        help="Data source (default: rkrattsbaser)",
     )
     parser.add_argument(
         "--from-year",
         type=int,
         default=1825,
-        help="Start year for import (default: 1825)",
+        help="Start year (only used with --source rinfo)",
     )
     parser.add_argument(
         "--to-year",
         type=int,
         default=date.today().year,
-        help="End year for import (default: current year)",
+        help="End year (only used with --source rinfo)",
+    )
+    parser.add_argument(
+        "--sfs",
+        action="append",
+        metavar="YYYY:NNN",
+        dest="sfs_filter",
+        help="Limit to specific SFS number(s) (repeatable, only with rkrattsbaser)",
     )
     parser.add_argument(
         "--dry-run",
@@ -263,7 +518,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    run_import(args.from_year, args.to_year, args.dry_run)
+    if args.source == "rinfo":
+        run_import(args.from_year, args.to_year, args.dry_run)
+    else:
+        run_import_rkrattsbaser(dry_run=args.dry_run, sfs_filter=args.sfs_filter)
 
 
 if __name__ == "__main__":
