@@ -14,7 +14,7 @@ import logging
 import os
 import sys
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 
 import git
@@ -141,8 +141,9 @@ def create_commit(
 
     repo.index.add([str(file_path)])
 
-    # Set historical dates
-    author_date = f"{ikraftträdande}T00:00:00+01:00"
+    # Set historical dates — gitpython requires "UNIX_TS +HHMM" format
+    normalized = _normalize_date(ikraftträdande) or "1900-01-01"
+    author_date = _date_to_git_ts(normalized)
     author = git.Actor(departement, "noreply@riksdagen.se")
 
     repo.index.commit(
@@ -174,9 +175,44 @@ def create_annual_tags(repo: git.Repo, from_year: int, to_year: int) -> None:
             logger.warning("Could not create tag %s", tag_name)
 
 
+_SWEDISH_MONTHS = {
+    "januari": 1, "februari": 2, "mars": 3, "april": 4,
+    "maj": 5, "juni": 6, "juli": 7, "augusti": 8,
+    "september": 9, "oktober": 10, "november": 11, "december": 12,
+}
+
+_TZ_SE = timezone(timedelta(hours=1))
+
+
+def _normalize_date(raw: str | None) -> str | None:
+    """Normalize date to ISO 'YYYY-MM-DD'. Handles ISO and Swedish prose formats."""
+    if not raw:
+        return None
+    raw = raw.strip()
+    if raw[:4].isdigit() and len(raw) >= 10 and raw[4] == "-":
+        return raw[:10]
+    # Swedish prose: "den D MONTH YYYY" or "D MONTH YYYY"
+    parts = raw.lower().replace("den ", "").split()
+    if len(parts) == 3:
+        try:
+            day, month_name, year = parts
+            month = _SWEDISH_MONTHS.get(month_name)
+            if month:
+                return f"{int(year):04d}-{month:02d}-{int(day):02d}"
+        except (ValueError, KeyError):
+            pass
+    return None
+
+
+def _date_to_git_ts(iso_date: str) -> str:
+    """Convert 'YYYY-MM-DD' to git author_date format 'UNIX_TS +0100'."""
+    dt = datetime.strptime(iso_date, "%Y-%m-%d").replace(tzinfo=_TZ_SE)
+    return f"{int(dt.timestamp())} +0100"
+
+
 def sort_key_for_sfs(metadata) -> str:
-    """Return sortable key: ikraftträdande ISO date, or '9999-99-99' for None."""
-    return metadata.ikraftträdande or "9999-99-99"
+    """Return sortable key: normalized ISO date, or '9999-99-99' for None."""
+    return _normalize_date(metadata.ikraftträdande) or "9999-99-99"
 
 
 def run_import_rkrattsbaser(
@@ -227,8 +263,8 @@ def run_import_rkrattsbaser(
 
             # Resolve votering from riksdag protocol
             bet_beteckning = parsed.get("forarbete_bet") or ""
-            ikraft = parsed.get("ikraftträdande") or ""
-            year = int(ikraft[:4]) if ikraft and len(ikraft) >= 4 else 0
+            ikraft = _normalize_date(parsed.get("ikraftträdande")) or ""
+            year = int(ikraft[:4]) if ikraft else 0
             rm = str(year) if year <= 1974 else f"{year}/{str(year + 1)[-2:]}" if year > 0 else ""
             votering_str = "ej tillgänglig"
             riksdagen_dok = "okänd"
@@ -259,7 +295,10 @@ def run_import_rkrattsbaser(
 
     if not dry_run:
         logger.info("Creating annual tags...")
-        years = [int(m.ikraftträdande[:4]) for m, _ in entries if m.ikraftträdande]
+        years = [
+            int(iso[:4]) for m, _ in entries
+            if (iso := _normalize_date(m.ikraftträdande))
+        ]
         if years:
             create_annual_tags(repo, min(years), max(years))
 
